@@ -1,6 +1,7 @@
 """Database storage layer"""
 import aiosqlite
 import json
+import os
 from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
@@ -16,6 +17,51 @@ class Database:
             data_dir.mkdir(exist_ok=True)
             db_path = str(data_dir / "hancat.db")
         self.db_path = db_path
+        # Try to ensure directory exists, but don't fail initialization if it doesn't
+        # The actual check will happen when connecting to the database
+        self._ensure_db_dir(raise_on_error=False)
+
+    def _ensure_db_dir(self, raise_on_error: bool = True):
+        """Ensure the database directory exists
+        
+        Args:
+            raise_on_error: If True, raise exception on error. If False, just log warning.
+        """
+        db_path_obj = Path(self.db_path)
+        db_dir = db_path_obj.parent
+        
+        # Skip if directory already exists and is writable
+        if db_dir.exists() and db_dir.is_dir():
+            if os.access(db_dir, os.W_OK):
+                return
+            else:
+                error_msg = f"Database directory {db_dir} exists but is not writable"
+                if raise_on_error:
+                    raise PermissionError(error_msg)
+                import logging
+                logging.warning(error_msg)
+                return
+        
+        try:
+            # Create directory with parents if needed
+            db_dir.mkdir(parents=True, exist_ok=True)
+            # Ensure the directory is writable
+            if not os.access(db_dir, os.W_OK):
+                raise PermissionError(f"Database directory {db_dir} is not writable")
+        except (OSError, PermissionError) as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            error_msg = f"Could not create or access database directory {db_dir}: {e}"
+            if raise_on_error:
+                logger.error(error_msg)
+                raise
+            else:
+                logger.warning(error_msg)
+    
+    async def _connect(self):
+        """Connect to database, ensuring directory exists first"""
+        self._ensure_db_dir()
+        return aiosqlite.connect(self.db_path)
 
     def db_exists(self) -> bool:
         """Check if database file exists"""
@@ -210,7 +256,7 @@ class Database:
             config_dict: Configuration dictionary from setting.toml (optional)
                         Used to initialize new tables with values from setting.toml
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             print("Checking database integrity and performing migrations...")
 
             # Check and add missing columns to tokens table
@@ -323,7 +369,7 @@ class Database:
 
     async def init_db(self):
         """Initialize database tables - creates all tables and ensures data integrity"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Tokens table
             await db.execute("""
                 CREATE TABLE IF NOT EXISTS tokens (
@@ -526,7 +572,7 @@ class Database:
             is_first_startup: If True, initialize all config rows from setting.toml.
                             If False (upgrade mode), only ensure missing config rows exist with default values.
         """
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             if is_first_startup:
                 # First startup: Initialize all config tables with values from setting.toml
                 await self._ensure_config_rows(db, config_dict)
@@ -539,7 +585,7 @@ class Database:
     # Token operations
     async def add_token(self, token: Token) -> int:
         """Add a new token"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute("""
                 INSERT INTO tokens (token, email, username, name, st, rt, client_id, proxy_url, remark, expiry_time, is_active,
                                    plan_type, plan_title, subscription_end, sora2_supported, sora2_invite_code,
@@ -567,7 +613,7 @@ class Database:
     
     async def get_token(self, token_id: int) -> Optional[Token]:
         """Get token by ID"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM tokens WHERE id = ?", (token_id,))
             row = await cursor.fetchone()
@@ -577,7 +623,7 @@ class Database:
     
     async def get_token_by_value(self, token: str) -> Optional[Token]:
         """Get token by value"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM tokens WHERE token = ?", (token,))
             row = await cursor.fetchone()
@@ -587,7 +633,7 @@ class Database:
 
     async def get_token_by_email(self, email: str) -> Optional[Token]:
         """Get token by email"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM tokens WHERE email = ?", (email,))
             row = await cursor.fetchone()
@@ -597,7 +643,7 @@ class Database:
     
     async def get_active_tokens(self) -> List[Token]:
         """Get all active tokens (enabled, not cooled down, not expired)"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
                 SELECT * FROM tokens
@@ -611,7 +657,7 @@ class Database:
     
     async def get_all_tokens(self) -> List[Token]:
         """Get all tokens"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM tokens ORDER BY created_at DESC")
             rows = await cursor.fetchall()
@@ -619,7 +665,7 @@ class Database:
     
     async def update_token_usage(self, token_id: int):
         """Update token usage"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE tokens 
                 SET last_used_at = CURRENT_TIMESTAMP, use_count = use_count + 1
@@ -629,7 +675,7 @@ class Database:
     
     async def update_token_status(self, token_id: int, is_active: bool):
         """Update token status"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE tokens SET is_active = ? WHERE id = ?
             """, (is_active, token_id))
@@ -637,7 +683,7 @@ class Database:
 
     async def mark_token_expired(self, token_id: int):
         """Mark token as expired and disable it"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE tokens SET is_expired = 1, is_active = 0 WHERE id = ?
             """, (token_id,))
@@ -645,7 +691,7 @@ class Database:
 
     async def clear_token_expired(self, token_id: int):
         """Clear token expired flag"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE tokens SET is_expired = 0 WHERE id = ?
             """, (token_id,))
@@ -654,7 +700,7 @@ class Database:
     async def update_token_sora2(self, token_id: int, supported: bool, invite_code: Optional[str] = None,
                                 redeemed_count: int = 0, total_count: int = 0, remaining_count: int = 0):
         """Update token Sora2 support info"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE tokens
                 SET sora2_supported = ?, sora2_invite_code = ?, sora2_redeemed_count = ?, sora2_total_count = ?, sora2_remaining_count = ?
@@ -664,7 +710,7 @@ class Database:
 
     async def update_token_sora2_remaining(self, token_id: int, remaining_count: int):
         """Update token Sora2 remaining count"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE tokens SET sora2_remaining_count = ? WHERE id = ?
             """, (remaining_count, token_id))
@@ -672,7 +718,7 @@ class Database:
 
     async def update_token_sora2_cooldown(self, token_id: int, cooldown_until: Optional[datetime]):
         """Update token Sora2 cooldown time"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE tokens SET sora2_cooldown_until = ? WHERE id = ?
             """, (cooldown_until, token_id))
@@ -680,7 +726,7 @@ class Database:
 
     async def update_token_cooldown(self, token_id: int, cooled_until: datetime):
         """Update token cooldown"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE tokens SET cooled_until = ? WHERE id = ?
             """, (cooled_until, token_id))
@@ -688,7 +734,7 @@ class Database:
     
     async def delete_token(self, token_id: int):
         """Delete token"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("DELETE FROM token_stats WHERE token_id = ?", (token_id,))
             await db.execute("DELETE FROM tokens WHERE id = ?", (token_id,))
             await db.commit()
@@ -709,7 +755,7 @@ class Database:
                           image_concurrency: Optional[int] = None,
                           video_concurrency: Optional[int] = None):
         """Update token (AT, ST, RT, client_id, proxy_url, remark, expiry_time, subscription info, image_enabled, video_enabled)"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Build dynamic update query
             updates = []
             params = []
@@ -779,7 +825,7 @@ class Database:
     # Token stats operations
     async def get_token_stats(self, token_id: int) -> Optional[TokenStats]:
         """Get token statistics"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM token_stats WHERE token_id = ?", (token_id,))
             row = await cursor.fetchone()
@@ -790,7 +836,7 @@ class Database:
     async def increment_image_count(self, token_id: int):
         """Increment image generation count"""
         from datetime import date
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             today = str(date.today())
             # Get current stats
             cursor = await db.execute("SELECT today_date FROM token_stats WHERE token_id = ?", (token_id,))
@@ -819,7 +865,7 @@ class Database:
     async def increment_video_count(self, token_id: int):
         """Increment video generation count"""
         from datetime import date
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             today = str(date.today())
             # Get current stats
             cursor = await db.execute("SELECT today_date FROM token_stats WHERE token_id = ?", (token_id,))
@@ -853,7 +899,7 @@ class Database:
             increment_consecutive: Whether to increment consecutive error count (False for overload errors)
         """
         from datetime import date
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             today = str(date.today())
             # Get current stats
             cursor = await db.execute("SELECT today_date FROM token_stats WHERE token_id = ?", (token_id,))
@@ -905,7 +951,7 @@ class Database:
     
     async def reset_error_count(self, token_id: int):
         """Reset consecutive error count (keep total error_count)"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE token_stats SET consecutive_error_count = 0 WHERE token_id = ?
             """, (token_id,))
@@ -914,7 +960,7 @@ class Database:
     # Task operations
     async def create_task(self, task: Task) -> int:
         """Create a new task"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute("""
                 INSERT INTO tasks (task_id, token_id, model, prompt, status, progress)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -925,7 +971,7 @@ class Database:
     async def update_task(self, task_id: str, status: str, progress: float, 
                          result_urls: Optional[str] = None, error_message: Optional[str] = None):
         """Update task status"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             completed_at = datetime.now() if status in ["completed", "failed"] else None
             await db.execute("""
                 UPDATE tasks 
@@ -936,7 +982,7 @@ class Database:
     
     async def get_task(self, task_id: str) -> Optional[Task]:
         """Get task by ID"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,))
             row = await cursor.fetchone()
@@ -947,7 +993,7 @@ class Database:
     # Request log operations
     async def log_request(self, log: RequestLog) -> int:
         """Log a request and return log ID"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             cursor = await db.execute("""
                 INSERT INTO request_logs (token_id, task_id, operation, request_body, response_body, status_code, duration)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -959,7 +1005,7 @@ class Database:
     async def update_request_log(self, log_id: int, response_body: Optional[str] = None,
                                  status_code: Optional[int] = None, duration: Optional[float] = None):
         """Update request log with completion data"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             updates = []
             params = []
 
@@ -982,7 +1028,7 @@ class Database:
     
     async def get_recent_logs(self, limit: int = 100) -> List[dict]:
         """Get recent logs with token email"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("""
                 SELECT
@@ -1007,14 +1053,14 @@ class Database:
 
     async def clear_all_logs(self):
         """Clear all request logs"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("DELETE FROM request_logs")
             await db.commit()
 
     # Admin config operations
     async def get_admin_config(self) -> AdminConfig:
         """Get admin configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM admin_config WHERE id = 1")
             row = await cursor.fetchone()
@@ -1026,7 +1072,7 @@ class Database:
     
     async def update_admin_config(self, config: AdminConfig):
         """Update admin configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE admin_config
                 SET admin_username = ?, admin_password = ?, api_key = ?, error_ban_threshold = ?, updated_at = CURRENT_TIMESTAMP
@@ -1037,7 +1083,7 @@ class Database:
     # Proxy config operations
     async def get_proxy_config(self) -> ProxyConfig:
         """Get proxy configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM proxy_config WHERE id = 1")
             row = await cursor.fetchone()
@@ -1049,7 +1095,7 @@ class Database:
     
     async def update_proxy_config(self, enabled: bool, proxy_url: Optional[str]):
         """Update proxy configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE proxy_config
                 SET proxy_enabled = ?, proxy_url = ?, updated_at = CURRENT_TIMESTAMP
@@ -1060,7 +1106,7 @@ class Database:
     # Watermark-free config operations
     async def get_watermark_free_config(self) -> WatermarkFreeConfig:
         """Get watermark-free configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM watermark_free_config WHERE id = 1")
             row = await cursor.fetchone()
@@ -1073,7 +1119,7 @@ class Database:
     async def update_watermark_free_config(self, enabled: bool, parse_method: str = None,
                                           custom_parse_url: str = None, custom_parse_token: str = None):
         """Update watermark-free configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             if parse_method is None and custom_parse_url is None and custom_parse_token is None:
                 # Only update enabled status
                 await db.execute("""
@@ -1094,7 +1140,7 @@ class Database:
     # Cache config operations
     async def get_cache_config(self) -> CacheConfig:
         """Get cache configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM cache_config WHERE id = 1")
             row = await cursor.fetchone()
@@ -1106,7 +1152,7 @@ class Database:
 
     async def update_cache_config(self, enabled: bool = None, timeout: int = None, base_url: Optional[str] = None):
         """Update cache configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Get current config first
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM cache_config WHERE id = 1")
@@ -1136,7 +1182,7 @@ class Database:
     # Generation config operations
     async def get_generation_config(self) -> GenerationConfig:
         """Get generation configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM generation_config WHERE id = 1")
             row = await cursor.fetchone()
@@ -1148,7 +1194,7 @@ class Database:
 
     async def update_generation_config(self, image_timeout: int = None, video_timeout: int = None):
         """Update generation configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             # Get current config first
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM generation_config WHERE id = 1")
@@ -1173,7 +1219,7 @@ class Database:
     # Token refresh config operations
     async def get_token_refresh_config(self) -> TokenRefreshConfig:
         """Get token refresh configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM token_refresh_config WHERE id = 1")
             row = await cursor.fetchone()
@@ -1185,7 +1231,7 @@ class Database:
 
     async def update_token_refresh_config(self, at_auto_refresh_enabled: bool):
         """Update token refresh configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE token_refresh_config
                 SET at_auto_refresh_enabled = ?, updated_at = CURRENT_TIMESTAMP
@@ -1196,7 +1242,7 @@ class Database:
     # Auto register config operations
     async def get_auto_register_config(self) -> AutoRegisterConfig:
         """Get auto register configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute("SELECT * FROM auto_register_config WHERE id = 1")
             row = await cursor.fetchone()
@@ -1226,7 +1272,7 @@ class Database:
         max_count: int = None
     ):
         """Update auto register configuration"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             updates = []
             params = []
             
@@ -1264,7 +1310,7 @@ class Database:
 
     async def update_auto_register_last_run(self):
         """Update last run time for auto register"""
-        async with aiosqlite.connect(self.db_path) as db:
+        async with self._connect() as db:
             await db.execute("""
                 UPDATE auto_register_config
                 SET last_run_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
