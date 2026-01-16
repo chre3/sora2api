@@ -167,12 +167,18 @@ class RegisterFlowService:
                     browser = await p.chromium.launch(**browser_options)
                     logger.info("浏览器已启动 (Chrome)")
                 except Exception as e:
-                    logger.warning(f"使用 Chrome 通道启动失败: {e}，尝试使用 Chromium")
+                    logger.warning(f"使用 Chrome 通道启动失败: {e}")
+                    logger.info("尝试使用 Chromium...")
                     # 如果 Chrome 通道失败，回退到 Chromium
                     if "channel" in browser_options:
                         del browser_options["channel"]
-                    browser = await p.chromium.launch(**browser_options)
-                    logger.info("浏览器已启动 (Chromium)")
+                    try:
+                        browser = await p.chromium.launch(**browser_options)
+                        logger.info("浏览器已启动 (Chromium)")
+                    except Exception as e2:
+                        logger.error(f"使用 Chromium 启动也失败: {e2}")
+                        logger.error("请确保已运行: playwright install chromium")
+                        raise
                 
                 # 记录代理配置信息
                 if final_proxy:
