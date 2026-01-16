@@ -110,7 +110,7 @@ class RegisterFlowService:
                         chrome_path = mac_chrome_path
                 
                 browser_options = {
-                    "headless": True,  # 设置为无头模式
+                    "headless": "new",  # 使用新的 headless 模式（Chrome 新版本要求）
                     "slow_mo": int(os.getenv("SLOW_MO", "50")),
                     "channel": "chrome",  # 使用 Chrome 通道而不是 Chromium
                     "args": [
@@ -353,6 +353,9 @@ class RegisterFlowService:
                                 # 注意：不关闭 sms_service，以便复用手机号
                                 
                                 # 重新启动浏览器和服务
+                                # 确保使用新的 headless 模式
+                                if "headless" in browser_options and browser_options["headless"] is True:
+                                    browser_options["headless"] = "new"
                                 browser = await p.chromium.launch(**browser_options)
                                 
                                 temp_mail = TempMailService(self.tempmail_api_key)
