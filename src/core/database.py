@@ -14,7 +14,6 @@ class Database:
         if db_path is None:
             # Store database in data directory
             data_dir = Path(__file__).parent.parent.parent / "data"
-            data_dir.mkdir(exist_ok=True)
             db_path = str(data_dir / "hancat.db")
         self.db_path = db_path
         # Try to ensure directory exists, but don't fail initialization if it doesn't
@@ -27,6 +26,9 @@ class Database:
         Args:
             raise_on_error: If True, raise exception on error. If False, just log warning.
         """
+        import logging
+        logger = logging.getLogger(__name__)
+        
         db_path_obj = Path(self.db_path)
         db_dir = db_path_obj.parent
         
@@ -35,28 +37,37 @@ class Database:
             if os.access(db_dir, os.W_OK):
                 return
             else:
-                error_msg = f"Database directory {db_dir} exists but is not writable"
+                error_msg = f"Database directory {db_dir} exists but is not writable. Check permissions."
+                logger.error(error_msg)
                 if raise_on_error:
                     raise PermissionError(error_msg)
-                import logging
-                logging.warning(error_msg)
                 return
         
+        # Try to create the directory
         try:
             # Create directory with parents if needed
             db_dir.mkdir(parents=True, exist_ok=True)
-            # Ensure the directory is writable
+            logger.info(f"Created database directory: {db_dir}")
+            
+            # Verify the directory is writable
             if not os.access(db_dir, os.W_OK):
-                raise PermissionError(f"Database directory {db_dir} is not writable")
-        except (OSError, PermissionError) as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            error_msg = f"Could not create or access database directory {db_dir}: {e}"
-            if raise_on_error:
+                error_msg = f"Database directory {db_dir} is not writable after creation. Check permissions."
                 logger.error(error_msg)
+                if raise_on_error:
+                    raise PermissionError(error_msg)
+                return
+                
+        except OSError as e:
+            error_msg = f"Could not create database directory {db_dir}: {e}. " \
+                       f"Please ensure the parent directory exists and has write permissions."
+            logger.error(error_msg)
+            if raise_on_error:
+                raise PermissionError(error_msg) from e
+        except Exception as e:
+            error_msg = f"Unexpected error creating database directory {db_dir}: {e}"
+            logger.error(error_msg)
+            if raise_on_error:
                 raise
-            else:
-                logger.warning(error_msg)
     
     async def _connect(self):
         """Connect to database, ensuring directory exists first"""
