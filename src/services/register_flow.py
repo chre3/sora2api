@@ -110,9 +110,8 @@ class RegisterFlowService:
                         chrome_path = mac_chrome_path
                 
                 browser_options = {
-                    "headless": "new",  # 使用新的 headless 模式（Chrome 新版本要求）
+                    "headless": True,  # 无头模式（Chrome 132+ 会自动使用新的 headless 模式）
                     "slow_mo": int(os.getenv("SLOW_MO", "50")),
-                    "channel": "chrome",  # 使用 Chrome 通道而不是 Chromium
                     "args": [
                         "--no-first-run",
                         "--window-size=1920,1080",
@@ -153,32 +152,15 @@ class RegisterFlowService:
                     ],
                 }
                 
-                # 如果指定了 Chrome 路径，使用 executable_path；否则使用 channel="chrome"
+                # 如果指定了 Chrome 路径，使用 executable_path
                 if chrome_path:
                     browser_options["executable_path"] = chrome_path
-                    # 如果使用 executable_path，移除 channel
-                    if "channel" in browser_options:
-                        del browser_options["channel"]
                     logger.info(f"使用指定的 Chrome 路径: {chrome_path}")
                 else:
-                    logger.info("使用 Chrome 通道 (channel='chrome')")
+                    logger.info("使用 Playwright Chromium")
                 
-                try:
-                    browser = await p.chromium.launch(**browser_options)
-                    logger.info("浏览器已启动 (Chrome)")
-                except Exception as e:
-                    logger.warning(f"使用 Chrome 通道启动失败: {e}")
-                    logger.info("尝试使用 Chromium...")
-                    # 如果 Chrome 通道失败，回退到 Chromium
-                    if "channel" in browser_options:
-                        del browser_options["channel"]
-                    try:
-                        browser = await p.chromium.launch(**browser_options)
-                        logger.info("浏览器已启动 (Chromium)")
-                    except Exception as e2:
-                        logger.error(f"使用 Chromium 启动也失败: {e2}")
-                        logger.error("请确保已运行: playwright install chromium")
-                        raise
+                browser = await p.chromium.launch(**browser_options)
+                logger.info("浏览器已启动")
                 
                 # 记录代理配置信息
                 if final_proxy:
@@ -353,9 +335,6 @@ class RegisterFlowService:
                                 # 注意：不关闭 sms_service，以便复用手机号
                                 
                                 # 重新启动浏览器和服务
-                                # 确保使用新的 headless 模式
-                                if "headless" in browser_options and browser_options["headless"] is True:
-                                    browser_options["headless"] = "new"
                                 browser = await p.chromium.launch(**browser_options)
                                 
                                 temp_mail = TempMailService(self.tempmail_api_key)

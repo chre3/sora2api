@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 from typing import Optional, Dict, Callable
 from playwright.async_api import async_playwright, Browser, Page, BrowserContext
+from playwright_stealth import stealth_async
 from .tempmail_service import TempMailService
 from .sms_service import GrizzlySMSService
 
@@ -187,7 +188,7 @@ class OpenAIRegister:
             "deviceMemory": random.choice([4, 8, 16, 32]),
         }
         
-        # 注入指纹脚本
+        # 注入指纹脚本和反检测脚本（类似 puppeteer-extra-plugin-stealth）
         await page.add_init_script(f"""
         (() => {{
             const fp = {json.dumps(fingerprint)};
@@ -240,6 +241,41 @@ class OpenAIRegister:
             }});
             Object.defineProperty(screen, "availHeight", {{
                 get: () => fp.resolution.height - 40,
+            }});
+            
+            // 反检测：隐藏 webdriver 属性
+            Object.defineProperty(navigator, "webdriver", {{
+                get: () => false,
+            }});
+            
+            // 反检测：修改 Chrome 对象
+            if (window.chrome) {{
+                window.chrome = {{
+                    ...window.chrome,
+                    runtime: {{}},
+                }};
+            }} else {{
+                window.chrome = {{
+                    runtime: {{}},
+                }};
+            }}
+            
+            // 反检测：修改 permissions
+            const originalQuery = window.navigator.permissions.query;
+            window.navigator.permissions.query = (parameters) => (
+                parameters.name === 'notifications' ?
+                    Promise.resolve({{ state: Notification.permission }}) :
+                    originalQuery(parameters)
+            );
+            
+            // 反检测：修改 plugins
+            Object.defineProperty(navigator, "plugins", {{
+                get: () => [1, 2, 3, 4, 5],
+            }});
+            
+            // 反检测：修改 languages
+            Object.defineProperty(navigator, "languages", {{
+                get: () => ["en-US", "en"],
             }});
         }})();
         """)
@@ -305,6 +341,14 @@ class OpenAIRegister:
         logger.info('正在创建新页面...')
         self.page = await self.context.new_page()
         logger.info('页面创建完成')
+        
+        # 应用 playwright-stealth 反检测
+        logger.info('正在应用 playwright-stealth 反检测...')
+        try:
+            await stealth_async(self.page)
+            logger.info('playwright-stealth 反检测应用完成')
+        except Exception as e:
+            logger.warning(f'应用 playwright-stealth 失败: {e}，将使用自定义反检测脚本')
         
         # 应用指纹
         logger.info('正在应用浏览器指纹...')
