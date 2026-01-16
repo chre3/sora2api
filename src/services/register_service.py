@@ -353,10 +353,15 @@ class OpenAIRegister:
         logger.info(f'正在点击免费注册按钮..., 当前URL: {current_url}')
         
         # 检查是否已经在注册页面
-        email_input = await self.page.query_selector('input[type="email"], input[name="email"]')
-        if email_input:
-            logger.info('已经在注册页面，跳过点击注册按钮')
-            return
+        try:
+            email_input = await self.page.query_selector('input[type="email"], input[name="email"]')
+            if email_input:
+                is_visible = await email_input.is_visible()
+                if is_visible:
+                    logger.info('已经在注册页面，跳过点击注册按钮')
+                    return
+        except Exception as e:
+            logger.info(f'检查邮箱输入框时出错（可能页面未加载）: {e}，继续执行点击注册按钮')
         
         # 等待注册按钮出现
         try:
@@ -366,6 +371,9 @@ class OpenAIRegister:
                 timeout=15000
             )
             if signup_btn:
+                logger.info('找到注册按钮，准备点击...')
+                # 等待按钮可点击
+                await signup_btn.wait_for_element_state("visible", timeout=5000)
                 await signup_btn.click()
                 logger.info('已点击免费注册按钮 (data-testid)')
             else:
@@ -374,12 +382,16 @@ class OpenAIRegister:
                 buttons = await self.page.query_selector_all('button, a')
                 clicked = False
                 for btn in buttons:
-                    text = await btn.text_content()
-                    if text and ('免费注册' in text or 'Sign up' in text or '注册' in text):
-                        await btn.click()
-                        logger.info(f'已点击免费注册按钮 (文本: {text.strip()})')
-                        clicked = True
-                        break
+                    try:
+                        text = await btn.text_content()
+                        if text and ('免费注册' in text or 'Sign up' in text or '注册' in text):
+                            await btn.wait_for_element_state("visible", timeout=5000)
+                            await btn.click()
+                            logger.info(f'已点击免费注册按钮 (文本: {text.strip()})')
+                            clicked = True
+                            break
+                    except:
+                        continue
                 if not clicked:
                     logger.warn('未找到注册按钮')
         except Exception as e:
@@ -388,22 +400,51 @@ class OpenAIRegister:
             logger.error(f'错误发生时的URL: {current_url}')
             raise
         
-        # 等待跳转
-        logger.info('等待页面跳转...')
-        await self._sleep(2000)
+        # 等待页面导航完成（重要：等待导航完成后再查询元素）
+        logger.info('等待页面导航完成...')
+        try:
+            # 等待页面加载状态
+            await self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+            logger.info('页面DOM加载完成')
+            
+            # 等待网络空闲（可选，如果页面有大量资源加载）
+            try:
+                await self.page.wait_for_load_state("networkidle", timeout=5000)
+                logger.info('页面网络空闲')
+            except:
+                logger.info('等待网络空闲超时，继续执行')
+            
+            # 额外等待一下，确保页面完全渲染
+            await self._sleep(1000)
+        except Exception as e:
+            logger.warn(f'等待页面导航时出错: {e}，继续执行')
+        
         current_url = self.page.url
         logger.info(f'跳转后URL: {current_url}')
         
-        # 等待邮箱输入框出现
+        # 等待邮箱输入框出现（使用 wait_for_selector 而不是 query_selector）
         logger.info('等待邮箱输入框出现...')
-        for i in range(10):
-            email_input = await self.page.query_selector('input[type="email"], input[name="email"]')
+        try:
+            email_input = await self.page.wait_for_selector(
+                'input[type="email"], input[name="email"], input[autocomplete="email"]',
+                timeout=15000,
+                state="visible"
+            )
             if email_input:
-                logger.info(f'邮箱输入框已出现 (尝试 {i+1}/10)')
-                break
-            await self._sleep(1000)
-        else:
-            logger.warn('等待10秒后仍未找到邮箱输入框')
+                logger.info('邮箱输入框已出现并可见')
+            else:
+                logger.warn('邮箱输入框未找到')
+        except Exception as e:
+            logger.error(f'等待邮箱输入框超时: {e}')
+            current_url = self.page.url
+            logger.error(f'当前URL: {current_url}')
+            # 尝试截图以便调试
+            try:
+                await self.page.screenshot(path=self._get_screenshot_path('email-input-timeout.png'))
+                logger.info('已保存超时截图: email-input-timeout.png')
+            except:
+                pass
+            raise
     
     async def _enter_email(self, email: str):
         """输入邮箱地址"""
