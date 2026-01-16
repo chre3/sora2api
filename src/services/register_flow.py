@@ -157,7 +157,21 @@ class RegisterFlowService:
                 
                 browser = await p.chromium.launch(**browser_options)
                 logger.info("浏览器已启动")
-                logger.info(f"代理配置: {final_proxy if final_proxy else '无代理'}")
+                
+                # 记录代理配置信息
+                if final_proxy:
+                    # 隐藏密码部分用于日志
+                    proxy_log = final_proxy
+                    if "@" in proxy_log:
+                        parts = proxy_log.split("@")
+                        if len(parts) == 2:
+                            auth_part = parts[0]
+                            if "://" in auth_part and ":" in auth_part.split("://")[-1]:
+                                username = auth_part.split("://")[-1].split(":")[0]
+                                proxy_log = proxy_log.replace(auth_part.split("://")[-1], f"{username}:***")
+                    logger.info(f"代理配置: {proxy_log}")
+                else:
+                    logger.info("代理配置: 无代理")
                 
                 # 初始化服务
                 logger.info("正在初始化临时邮箱服务...")
@@ -166,6 +180,7 @@ class RegisterFlowService:
                 logger.info("临时邮箱服务初始化完成")
                 
                 logger.info("正在初始化注册服务...")
+                logger.info(f"传递代理配置到注册服务: {'已配置' if final_proxy else '无代理'}")
                 register = OpenAIRegister(
                     browser,
                     str(self.screenshot_dir),

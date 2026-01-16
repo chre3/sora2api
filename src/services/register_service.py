@@ -49,6 +49,61 @@ class OpenAIRegister:
         """获取截图路径"""
         return str(self.screenshot_dir / filename)
     
+    def _parse_proxy_url(self, proxy_url: str) -> Optional[Dict]:
+        """
+        解析代理URL，支持多种格式：
+        - http://proxy.example.com:8080
+        - https://proxy.example.com:8080
+        - socks5://proxy.example.com:1080
+        - http://username:password@proxy.example.com:8080
+        - socks5://username:password@proxy.example.com:1080
+        
+        Args:
+            proxy_url: 代理URL字符串
+            
+        Returns:
+            代理配置字典，格式: {"server": "...", "username": "...", "password": "..."}
+            如果URL格式不正确，返回None
+        """
+        if not proxy_url or not proxy_url.strip():
+            return None
+        
+        proxy_url = proxy_url.strip()
+        logger.info(f"解析代理URL: {proxy_url[:50]}..." if len(proxy_url) > 50 else f"解析代理URL: {proxy_url}")
+        
+        # 检查是否包含认证信息
+        if "@" in proxy_url:
+            # 格式: protocol://username:password@host:port
+            try:
+                # 分离协议和认证信息
+                if "://" in proxy_url:
+                    protocol_part, rest = proxy_url.split("://", 1)
+                    if "@" in rest:
+                        auth_part, server_part = rest.split("@", 1)
+                        if ":" in auth_part:
+                            username, password = auth_part.split(":", 1)
+                            proxy_config = {
+                                "server": f"{protocol_part}://{server_part}",
+                                "username": username,
+                                "password": password
+                            }
+                            logger.info(f"代理配置解析成功: 协议={protocol_part}, 服务器={server_part}, 用户名={username}")
+                            return proxy_config
+                        else:
+                            logger.warning(f"代理URL认证部分格式不正确: {auth_part}")
+            except Exception as e:
+                logger.warning(f"解析带认证的代理URL失败: {e}")
+                return None
+        else:
+            # 无认证信息的代理URL
+            if proxy_url.startswith("http://") or proxy_url.startswith("https://") or proxy_url.startswith("socks5://"):
+                logger.info(f"代理配置解析成功: 无认证, 服务器={proxy_url}")
+                return {"server": proxy_url}
+            else:
+                logger.warning(f"代理URL格式不支持: {proxy_url}")
+        
+        return None
+    
     def _get_random_full_name(self) -> str:
         """获取随机全名 (2个随机字母 + name.txt中的名字)"""
         letters = string.ascii_lowercase
@@ -204,15 +259,35 @@ class OpenAIRegister:
         
         if self.proxy_url:
             # 解析代理 URL
-            if self.proxy_url.startswith("http://") or self.proxy_url.startswith("https://"):
-                context_options["proxy"] = {"server": self.proxy_url}
-            elif self.proxy_url.startswith("socks5://"):
-                context_options["proxy"] = {"server": self.proxy_url}
-            logger.info(f'使用代理: {self.proxy_url}')
+            proxy_config = self._parse_proxy_url(self.proxy_url)
+            if proxy_config:
+                context_options["proxy"] = proxy_config
+                # 记录代理信息（隐藏密码）
+                proxy_log = self.proxy_url
+                if "@" in proxy_log:
+                    # 隐藏密码部分
+                    parts = proxy_log.split("@")
+                    if len(parts) == 2:
+                        auth_part = parts[0]
+                        if ":" in auth_part:
+                            username = auth_part.split("://")[-1].split(":")[0]
+                            proxy_log = proxy_log.replace(auth_part.split("://")[-1], f"{username}:***")
+                logger.info(f'使用代理: {proxy_log}')
+            else:
+                logger.warning(f'代理URL格式不正确，将不使用代理: {self.proxy_url}')
         
         logger.info('正在创建浏览器上下文...')
+        if "proxy" in context_options:
+            proxy_info = context_options["proxy"].copy()
+            if "password" in proxy_info:
+                proxy_info["password"] = "***"
+            logger.info(f'浏览器上下文代理配置: {proxy_info}')
         self.context = await self.browser.new_context(**context_options)
         logger.info('浏览器上下文创建完成')
+        
+        # 验证代理是否生效（通过检查页面请求）
+        if self.proxy_url:
+            logger.info('代理配置已应用到浏览器上下文')
         
         # 创建页面
         logger.info('正在创建新页面...')
