@@ -133,6 +133,21 @@ class TokenRefreshConfig(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
+class AutoRegisterConfig(BaseModel):
+    """Auto register configuration"""
+    id: int = 1
+    enabled: bool = False  # 是否启用定时补号
+    country_code: Optional[str] = None  # 国家代码
+    service_code: Optional[str] = None  # 服务代码
+    max_price: Optional[float] = None  # 出价金额
+    binding_rule: Optional[str] = "1绑1"  # 绑定规则：1绑1 或 1绑3
+    proxy_url: Optional[str] = None  # 代理配置
+    interval_hours: int = 24  # 补号间隔（小时）
+    max_count: Optional[int] = None  # 补号数量上限（达到后停止补号）
+    last_run_at: Optional[datetime] = None  # 上次运行时间
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+
 # API Request/Response models
 class ChatMessage(BaseModel):
     role: str

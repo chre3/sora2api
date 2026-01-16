@@ -13,6 +13,9 @@ from ..services.proxy_manager import ProxyManager
 from ..services.concurrency_manager import ConcurrencyManager
 from ..core.database import Database
 from ..core.models import Token, AdminConfig, ProxyConfig
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -145,6 +148,16 @@ class UpdateWatermarkFreeConfigRequest(BaseModel):
     parse_method: Optional[str] = "third_party"  # "third_party" or "custom"
     custom_parse_url: Optional[str] = None
     custom_parse_token: Optional[str] = None
+
+class UpdateAutoRegisterConfigRequest(BaseModel):
+    enabled: bool
+    country_code: Optional[str] = None
+    service_code: Optional[str] = None
+    max_price: Optional[float] = None
+    binding_rule: Optional[str] = "1绑1"  # "1绑1" or "1绑3"
+    proxy_url: Optional[str] = None
+    interval_hours: Optional[int] = 24
+    max_count: Optional[int] = None  # 补号数量上限（达到后停止补号）
 
 # Auth endpoints
 @router.post("/api/login", response_model=LoginResponse)
@@ -1115,3 +1128,122 @@ async def download_debug_logs(token: str = Depends(verify_admin_token)):
         filename="logs.txt",
         media_type="text/plain"
     )
+
+# Auto register config endpoints
+@router.get("/api/auto-register/config")
+async def get_auto_register_config(token: str = Depends(verify_admin_token)):
+    """Get auto register configuration"""
+    try:
+        config_obj = await db.get_auto_register_config()
+        return {
+            "success": True,
+            "config": {
+                "enabled": config_obj.enabled,
+                "country_code": config_obj.country_code,
+                "service_code": config_obj.service_code,
+                "max_price": config_obj.max_price,
+                "binding_rule": config_obj.binding_rule,
+                "proxy_url": config_obj.proxy_url,
+                "interval_hours": config_obj.interval_hours,
+                "max_count": config_obj.max_count,
+                "last_run_at": config_obj.last_run_at.isoformat() if config_obj.last_run_at else None
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to get auto register config: {str(e)}")
+
+@router.post("/api/auto-register/config")
+async def update_auto_register_config(
+    request: UpdateAutoRegisterConfigRequest,
+    token: str = Depends(verify_admin_token)
+):
+    """Update auto register configuration"""
+    try:
+        # Validate binding rule
+        if request.binding_rule and request.binding_rule not in ["1绑1", "1绑3"]:
+            raise HTTPException(status_code=400, detail="绑定规则必须是 '1绑1' 或 '1绑3'")
+        
+        # Update database
+        await db.update_auto_register_config(
+            enabled=request.enabled,
+            country_code=request.country_code,
+            service_code=request.service_code,
+            max_price=request.max_price,
+            binding_rule=request.binding_rule,
+            proxy_url=request.proxy_url,
+            interval_hours=request.interval_hours,
+            max_count=request.max_count
+        )
+        
+        return {
+            "success": True,
+            "message": "定时补号配置已更新"
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to update auto register config: {str(e)}")
+
+@router.post("/api/auto-register/run")
+async def run_auto_register(token: str = Depends(verify_admin_token)):
+    """手动执行一次定时补号"""
+    try:
+        from ..services.auto_register import AutoRegisterService
+        from ..services.token_manager import TokenManager
+        
+        # 获取配置
+        config_obj = await db.get_auto_register_config()
+        
+        if not config_obj.enabled:
+            raise HTTPException(status_code=400, detail="定时补号未启用")
+        
+        if not config_obj.country_code or not config_obj.service_code or config_obj.max_price is None:
+            raise HTTPException(status_code=400, detail="请先配置国家代码、服务代码和出价金额")
+        
+        # 检查补号数量限制
+        if config_obj.max_count is not None:
+            # 获取当前已注册的账号数量（通过 remark 字段筛选自动注册的账号）
+            all_tokens = await db.get_all_tokens()
+            auto_registered_count = sum(1 for token in all_tokens 
+                                      if token.remark and "自动注册" in token.remark)
+            
+            if auto_registered_count >= config_obj.max_count:
+                raise HTTPException(
+                    status_code=400, 
+                    detail=f"已达到补号数量上限（{auto_registered_count}/{config_obj.max_count}），停止补号"
+                )
+            
+            logger.info(f"当前已注册账号数: {auto_registered_count}/{config_obj.max_count}")
+        
+        # 创建自动注册服务（传递 db 和 token_manager 实例）
+        auto_register = AutoRegisterService(db=db, token_manager=token_manager)
+        
+        # 执行注册（新流程会自动保存到数据库）
+        result = await auto_register.register_one(
+            country_code=config_obj.country_code,
+            service_code=config_obj.service_code,
+            max_price=config_obj.max_price,
+            binding_rule=config_obj.binding_rule or "1绑1",
+            proxy_url=config_obj.proxy_url
+        )
+        
+        if not result.get("success"):
+            raise HTTPException(status_code=500, detail="注册失败")
+        
+        # 账号已经自动保存到数据库
+        accounts = result.get("accounts", [])
+        registered_count = len(accounts)
+        
+        # 更新最后运行时间
+        await db.update_auto_register_last_run()
+        
+        return {
+            "success": True,
+            "message": f"成功注册 {registered_count} 个账号并已保存到数据库",
+            "registered_count": registered_count,
+            "accounts": accounts
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"执行定时补号失败: {str(e)}")

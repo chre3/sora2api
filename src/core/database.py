@@ -4,7 +4,7 @@ import json
 from datetime import datetime
 from typing import Optional, List
 from pathlib import Path
-from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig
+from .models import Token, TokenStats, Task, RequestLog, AdminConfig, ProxyConfig, WatermarkFreeConfig, CacheConfig, GenerationConfig, TokenRefreshConfig, AutoRegisterConfig
 
 class Database:
     """SQLite database manager"""
@@ -172,6 +172,36 @@ class Database:
                 VALUES (1, ?)
             """, (at_auto_refresh_enabled,))
 
+        # Ensure auto_register_config has a row
+        cursor = await db.execute("SELECT COUNT(*) FROM auto_register_config")
+        count = await cursor.fetchone()
+        if count[0] == 0:
+            # Get auto register config from config_dict if provided, otherwise use defaults
+            enabled = False
+            country_code = None
+            service_code = None
+            max_price = None
+            binding_rule = "1绑1"
+            proxy_url = None
+            interval_hours = 24
+            max_count = None
+
+            if config_dict:
+                auto_register_config = config_dict.get("auto_register", {})
+                enabled = auto_register_config.get("enabled", False)
+                country_code = auto_register_config.get("country_code")
+                service_code = auto_register_config.get("service_code")
+                max_price = auto_register_config.get("max_price")
+                binding_rule = auto_register_config.get("binding_rule", "1绑1")
+                proxy_url = auto_register_config.get("proxy_url")
+                interval_hours = auto_register_config.get("interval_hours", 24)
+                max_count = auto_register_config.get("max_count")
+
+            await db.execute("""
+                INSERT INTO auto_register_config (id, enabled, country_code, service_code, max_price, binding_rule, proxy_url, interval_hours, max_count)
+                VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (enabled, country_code, service_code, max_price, binding_rule, proxy_url, interval_hours, max_count))
+
 
     async def check_and_migrate_db(self, config_dict: dict = None):
         """Check database integrity and perform migrations if needed
@@ -267,6 +297,20 @@ class Database:
                         try:
                             await db.execute(f"ALTER TABLE request_logs ADD COLUMN {col_name} {col_type}")
                             print(f"  ✓ Added column '{col_name}' to request_logs table")
+                        except Exception as e:
+                            print(f"  ✗ Failed to add column '{col_name}': {e}")
+
+            # Check and add missing columns to auto_register_config table
+            if await self._table_exists(db, "auto_register_config"):
+                columns_to_add = [
+                    ("max_count", "INTEGER"),
+                ]
+
+                for col_name, col_type in columns_to_add:
+                    if not await self._column_exists(db, "auto_register_config", col_name):
+                        try:
+                            await db.execute(f"ALTER TABLE auto_register_config ADD COLUMN {col_name} {col_type}")
+                            print(f"  ✓ Added column '{col_name}' to auto_register_config table")
                         except Exception as e:
                             print(f"  ✗ Failed to add column '{col_name}': {e}")
 
@@ -433,6 +477,24 @@ class Database:
                 CREATE TABLE IF NOT EXISTS token_refresh_config (
                     id INTEGER PRIMARY KEY DEFAULT 1,
                     at_auto_refresh_enabled BOOLEAN DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+
+            # Auto register config table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS auto_register_config (
+                    id INTEGER PRIMARY KEY DEFAULT 1,
+                    enabled BOOLEAN DEFAULT 0,
+                    country_code TEXT,
+                    service_code TEXT,
+                    max_price REAL,
+                    binding_rule TEXT DEFAULT '1绑1',
+                    proxy_url TEXT,
+                    interval_hours INTEGER DEFAULT 24,
+                    max_count INTEGER,
+                    last_run_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -1131,3 +1193,81 @@ class Database:
             """, (at_auto_refresh_enabled,))
             await db.commit()
 
+    # Auto register config operations
+    async def get_auto_register_config(self) -> AutoRegisterConfig:
+        """Get auto register configuration"""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute("SELECT * FROM auto_register_config WHERE id = 1")
+            row = await cursor.fetchone()
+            if row:
+                return AutoRegisterConfig(**dict(row))
+            # If no row exists, return a default config
+            return AutoRegisterConfig(
+                enabled=False,
+                country_code=None,
+                service_code=None,
+                max_price=None,
+                binding_rule="1绑1",
+                proxy_url=None,
+                interval_hours=24,
+                max_count=None
+            )
+
+    async def update_auto_register_config(
+        self,
+        enabled: bool = None,
+        country_code: str = None,
+        service_code: str = None,
+        max_price: float = None,
+        binding_rule: str = None,
+        proxy_url: str = None,
+        interval_hours: int = None,
+        max_count: int = None
+    ):
+        """Update auto register configuration"""
+        async with aiosqlite.connect(self.db_path) as db:
+            updates = []
+            params = []
+            
+            if enabled is not None:
+                updates.append("enabled = ?")
+                params.append(enabled)
+            if country_code is not None:
+                updates.append("country_code = ?")
+                params.append(country_code)
+            if service_code is not None:
+                updates.append("service_code = ?")
+                params.append(service_code)
+            if max_price is not None:
+                updates.append("max_price = ?")
+                params.append(max_price)
+            if binding_rule is not None:
+                updates.append("binding_rule = ?")
+                params.append(binding_rule)
+            if proxy_url is not None:
+                updates.append("proxy_url = ?")
+                params.append(proxy_url)
+            if interval_hours is not None:
+                updates.append("interval_hours = ?")
+                params.append(interval_hours)
+            if max_count is not None:
+                updates.append("max_count = ?")
+                params.append(max_count)
+            
+            if updates:
+                updates.append("updated_at = CURRENT_TIMESTAMP")
+                params.append(1)  # WHERE id = 1
+                query = f"UPDATE auto_register_config SET {', '.join(updates)} WHERE id = ?"
+                await db.execute(query, params)
+                await db.commit()
+
+    async def update_auto_register_last_run(self):
+        """Update last run time for auto register"""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute("""
+                UPDATE auto_register_config
+                SET last_run_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                WHERE id = 1
+            """)
+            await db.commit()
