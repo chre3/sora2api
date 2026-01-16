@@ -69,10 +69,31 @@ class Database:
             if raise_on_error:
                 raise
     
-    async def _connect(self):
-        """Connect to database, ensuring directory exists first"""
-        self._ensure_db_dir()
-        return aiosqlite.connect(self.db_path)
+    def _connect(self):
+        """Connect to database, ensuring directory exists first
+        
+        Returns:
+            aiosqlite.Connection: Database connection object
+        """
+        try:
+            self._ensure_db_dir(raise_on_error=True)
+        except (PermissionError, OSError) as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to ensure database directory exists: {e}")
+            logger.error(f"Database path: {self.db_path}")
+            logger.error(f"Database directory: {Path(self.db_path).parent}")
+            raise
+        
+        try:
+            return aiosqlite.connect(self.db_path)
+        except Exception as e:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.error(f"Failed to connect to database at {self.db_path}: {e}")
+            logger.error(f"Database directory exists: {Path(self.db_path).parent.exists()}")
+            logger.error(f"Database directory is writable: {os.access(Path(self.db_path).parent, os.W_OK) if Path(self.db_path).parent.exists() else False}")
+            raise
 
     def db_exists(self) -> bool:
         """Check if database file exists"""
