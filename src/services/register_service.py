@@ -251,11 +251,14 @@ class OpenAIRegister:
         logger.info(f'代理配置: {self.proxy_url if self.proxy_url else "无代理"}')
         
         # 创建浏览器上下文
+        # 使用与 sora_client 相同的 user_agent
+        user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
         context_options = {
             "viewport": {"width": 1920, "height": 1080},
-            "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "user_agent": user_agent,
             "locale": "en-US",
         }
+        logger.info(f'使用 User-Agent: {user_agent}')
         
         if self.proxy_url:
             # 解析代理 URL
@@ -269,12 +272,17 @@ class OpenAIRegister:
                     parts = proxy_log.split("@")
                     if len(parts) == 2:
                         auth_part = parts[0]
-                        if ":" in auth_part:
+                        if "://" in auth_part and ":" in auth_part.split("://")[-1]:
                             username = auth_part.split("://")[-1].split(":")[0]
                             proxy_log = proxy_log.replace(auth_part.split("://")[-1], f"{username}:***")
                 logger.info(f'使用代理: {proxy_log}')
+                logger.info(f'代理配置详情: server={proxy_config.get("server")}, '
+                           f'username={proxy_config.get("username", "无")}, '
+                           f'password={"***" if proxy_config.get("password") else "无"}')
             else:
                 logger.warning(f'代理URL格式不正确，将不使用代理: {self.proxy_url}')
+        else:
+            logger.info('未配置代理，将直接连接')
         
         logger.info('正在创建浏览器上下文...')
         if "proxy" in context_options:
@@ -282,12 +290,16 @@ class OpenAIRegister:
             if "password" in proxy_info:
                 proxy_info["password"] = "***"
             logger.info(f'浏览器上下文代理配置: {proxy_info}')
+        else:
+            logger.info('浏览器上下文无代理配置')
+        
         self.context = await self.browser.new_context(**context_options)
         logger.info('浏览器上下文创建完成')
         
-        # 验证代理是否生效（通过检查页面请求）
+        # 验证代理是否生效
         if self.proxy_url:
             logger.info('代理配置已应用到浏览器上下文')
+            # 可以通过检查页面请求来验证代理，但这里先不验证，避免影响性能
         
         # 创建页面
         logger.info('正在创建新页面...')
@@ -352,16 +364,20 @@ class OpenAIRegister:
         current_url = self.page.url
         logger.info(f'正在点击免费注册按钮..., 当前URL: {current_url}')
         
-        # 检查是否已经在注册页面
-        try:
-            email_input = await self.page.query_selector('input[type="email"], input[name="email"]')
-            if email_input:
-                is_visible = await email_input.is_visible()
-                if is_visible:
-                    logger.info('已经在注册页面，跳过点击注册按钮')
+        # 检查是否已经在注册页面（URL 包含 signup 或 log-in-or-create-account）
+        if 'signup' in current_url.lower() or 'log-in-or-create-account' in current_url.lower():
+            logger.info('已经在注册页面，跳过点击注册按钮')
+            try:
+                email_input = await self.page.wait_for_selector(
+                    'input[type="email"], input[name="email"], input[autocomplete="email"]',
+                    timeout=5000,
+                    state="visible"
+                )
+                if email_input:
+                    logger.info('确认邮箱输入框已存在')
                     return
-        except Exception as e:
-            logger.info(f'检查邮箱输入框时出错（可能页面未加载）: {e}，继续执行点击注册按钮')
+            except:
+                logger.info('邮箱输入框未找到，继续执行点击注册按钮')
         
         # 等待注册按钮出现
         try:
@@ -374,8 +390,14 @@ class OpenAIRegister:
                 logger.info('找到注册按钮，准备点击...')
                 # 等待按钮可点击
                 await signup_btn.wait_for_element_state("visible", timeout=5000)
-                await signup_btn.click()
-                logger.info('已点击免费注册按钮 (data-testid)')
+                await signup_btn.wait_for_element_state("stable", timeout=5000)
+                
+                # 点击按钮并等待导航
+                logger.info('点击注册按钮，等待导航...')
+                async with self.page.expect_navigation(timeout=30000, wait_until="domcontentloaded"):
+                    await signup_btn.click()
+                
+                logger.info('已点击免费注册按钮 (data-testid)，页面已导航')
             else:
                 # 备用：通过文本查找
                 logger.info('未找到 data-testid 按钮，尝试通过文本查找...')
@@ -386,8 +408,11 @@ class OpenAIRegister:
                         text = await btn.text_content()
                         if text and ('免费注册' in text or 'Sign up' in text or '注册' in text):
                             await btn.wait_for_element_state("visible", timeout=5000)
-                            await btn.click()
-                            logger.info(f'已点击免费注册按钮 (文本: {text.strip()})')
+                            await btn.wait_for_element_state("stable", timeout=5000)
+                            logger.info(f'找到注册按钮 (文本: {text.strip()})，点击并等待导航...')
+                            async with self.page.expect_navigation(timeout=30000, wait_until="domcontentloaded"):
+                                await btn.click()
+                            logger.info(f'已点击免费注册按钮 (文本: {text.strip()})，页面已导航')
                             clicked = True
                             break
                     except:
@@ -400,38 +425,44 @@ class OpenAIRegister:
             logger.error(f'错误发生时的URL: {current_url}')
             raise
         
-        # 等待页面导航完成（重要：等待导航完成后再查询元素）
+        # 等待页面导航完成
         logger.info('等待页面导航完成...')
         try:
             # 等待页面加载状态
-            await self.page.wait_for_load_state("domcontentloaded", timeout=10000)
+            await self.page.wait_for_load_state("domcontentloaded", timeout=15000)
             logger.info('页面DOM加载完成')
             
-            # 等待网络空闲（可选，如果页面有大量资源加载）
+            # 等待网络空闲
             try:
-                await self.page.wait_for_load_state("networkidle", timeout=5000)
+                await self.page.wait_for_load_state("networkidle", timeout=10000)
                 logger.info('页面网络空闲')
             except:
                 logger.info('等待网络空闲超时，继续执行')
             
             # 额外等待一下，确保页面完全渲染
-            await self._sleep(1000)
+            await self._sleep(1500)
         except Exception as e:
             logger.warn(f'等待页面导航时出错: {e}，继续执行')
         
         current_url = self.page.url
         logger.info(f'跳转后URL: {current_url}')
         
+        # 检查是否成功跳转到注册页面
+        if 'signup' in current_url.lower() or 'log-in-or-create-account' in current_url.lower():
+            logger.info('✓ 成功跳转到注册页面')
+        else:
+            logger.warning(f'⚠ 可能未成功跳转到注册页面，当前URL: {current_url}')
+        
         # 等待邮箱输入框出现（使用 wait_for_selector 而不是 query_selector）
         logger.info('等待邮箱输入框出现...')
         try:
             email_input = await self.page.wait_for_selector(
                 'input[type="email"], input[name="email"], input[autocomplete="email"]',
-                timeout=15000,
+                timeout=20000,
                 state="visible"
             )
             if email_input:
-                logger.info('邮箱输入框已出现并可见')
+                logger.info('✓ 邮箱输入框已出现并可见')
             else:
                 logger.warn('邮箱输入框未找到')
         except Exception as e:
@@ -442,6 +473,12 @@ class OpenAIRegister:
             try:
                 await self.page.screenshot(path=self._get_screenshot_path('email-input-timeout.png'))
                 logger.info('已保存超时截图: email-input-timeout.png')
+                # 尝试获取页面文本以便调试
+                try:
+                    page_text = await self.page.evaluate("() => document.body.innerText || ''")
+                    logger.error(f'页面文本前500字符: {page_text[:500]}')
+                except:
+                    pass
             except:
                 pass
             raise

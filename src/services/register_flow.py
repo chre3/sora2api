@@ -112,6 +112,7 @@ class RegisterFlowService:
                 browser_options = {
                     "headless": True,  # 设置为无头模式
                     "slow_mo": int(os.getenv("SLOW_MO", "50")),
+                    "channel": "chrome",  # 使用 Chrome 通道而不是 Chromium
                     "args": [
                         "--no-first-run",
                         "--window-size=1920,1080",
@@ -152,11 +153,26 @@ class RegisterFlowService:
                     ],
                 }
                 
+                # 如果指定了 Chrome 路径，使用 executable_path；否则使用 channel="chrome"
                 if chrome_path:
                     browser_options["executable_path"] = chrome_path
+                    # 如果使用 executable_path，移除 channel
+                    if "channel" in browser_options:
+                        del browser_options["channel"]
+                    logger.info(f"使用指定的 Chrome 路径: {chrome_path}")
+                else:
+                    logger.info("使用 Chrome 通道 (channel='chrome')")
                 
-                browser = await p.chromium.launch(**browser_options)
-                logger.info("浏览器已启动")
+                try:
+                    browser = await p.chromium.launch(**browser_options)
+                    logger.info("浏览器已启动 (Chrome)")
+                except Exception as e:
+                    logger.warning(f"使用 Chrome 通道启动失败: {e}，尝试使用 Chromium")
+                    # 如果 Chrome 通道失败，回退到 Chromium
+                    if "channel" in browser_options:
+                        del browser_options["channel"]
+                    browser = await p.chromium.launch(**browser_options)
+                    logger.info("浏览器已启动 (Chromium)")
                 
                 # 记录代理配置信息
                 if final_proxy:
