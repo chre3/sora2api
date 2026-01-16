@@ -157,17 +157,22 @@ class RegisterFlowService:
                 
                 browser = await p.chromium.launch(**browser_options)
                 logger.info("浏览器已启动")
+                logger.info(f"代理配置: {final_proxy if final_proxy else '无代理'}")
                 
                 # 初始化服务
+                logger.info("正在初始化临时邮箱服务...")
                 temp_mail = TempMailService(self.tempmail_api_key)
                 await temp_mail.init()
+                logger.info("临时邮箱服务初始化完成")
                 
+                logger.info("正在初始化注册服务...")
                 register = OpenAIRegister(
                     browser,
                     str(self.screenshot_dir),
                     proxy_url=final_proxy
                 )
                 await register.init()
+                logger.info("注册服务初始化完成")
                 
                 sms_service = GrizzlySMSService(
                     self.sms_api_key,
@@ -177,20 +182,27 @@ class RegisterFlowService:
                 )
                 
                 # 1. 获取临时邮箱
+                logger.info("步骤1: 正在获取临时邮箱...")
                 email = await temp_mail.get_email_address()
-                logger.info(f"获取到临时邮箱: {email}")
+                logger.info(f"步骤1完成: 获取到临时邮箱: {email}")
                 
                 # 2. 生成密码
+                logger.info("步骤2: 正在生成密码...")
                 password = register._generate_password()
+                logger.info(f"步骤2完成: 密码已生成 (长度: {len(password)})")
                 
                 # 3. 执行注册
+                logger.info("步骤3: 开始执行注册流程...")
                 async def get_verification_code():
+                    logger.info("等待邮箱验证码...")
                     code = await temp_mail.wait_for_verification_code(
                         timeout=int(os.getenv("WAIT_FOR_EMAIL_TIMEOUT", "120000"))
                     )
+                    logger.info(f"收到验证码: {code}")
                     return code
                 
                 success = await register.register(email, password, get_verification_code)
+                logger.info(f"步骤3完成: 注册{'成功' if success else '失败'}")
                 
                 if not success:
                     raise Exception("注册失败")

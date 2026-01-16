@@ -1,4 +1,5 @@
 """API routes - OpenAI compatible endpoints"""
+import logging
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse, JSONResponse
 from datetime import datetime
@@ -9,6 +10,7 @@ from ..core.auth import verify_api_key_header
 from ..core.models import ChatCompletionRequest
 from ..services.generation_handler import GenerationHandler, MODEL_CONFIG
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Dependency injection will be set up in main.py
@@ -45,6 +47,7 @@ def _extract_remix_id(text: str) -> str:
 @router.get("/v1/models")
 async def list_models(api_key: str = Depends(verify_api_key_header)):
     """List available models"""
+    logger.info("收到 /v1/models 请求")
     models = []
     
     for model_id, config in MODEL_CONFIG.items():
@@ -61,6 +64,7 @@ async def list_models(api_key: str = Depends(verify_api_key_header)):
             "description": description
         })
     
+    logger.info(f"返回 {len(models)} 个模型")
     return {
         "object": "list",
         "data": models
@@ -72,6 +76,11 @@ async def create_chat_completion(
     api_key: str = Depends(verify_api_key_header)
 ):
     """Create chat completion (unified endpoint for image and video generation)"""
+    logger.info("=" * 80)
+    logger.info("收到 /v1/chat/completions 请求")
+    logger.info(f"模型: {request.model}")
+    logger.info(f"流式输出: {request.stream}")
+    logger.info("=" * 80)
     try:
         # Extract prompt from messages
         if not request.messages:
@@ -243,6 +252,7 @@ async def create_chat_completion(
                 )
 
     except Exception as e:
+        logger.error(f"处理请求时出错: {str(e)}", exc_info=True)
         # Return OpenAI-compatible error format
         return JSONResponse(
             status_code=500,

@@ -191,7 +191,9 @@ class OpenAIRegister:
     
     async def init(self):
         """初始化注册页面"""
-        logger.info('正在打开 ChatGPT 登录页面...')
+        logger.info('=' * 80)
+        logger.info('正在初始化注册服务...')
+        logger.info(f'代理配置: {self.proxy_url if self.proxy_url else "无代理"}')
         
         # 创建浏览器上下文
         context_options = {
@@ -206,18 +208,26 @@ class OpenAIRegister:
                 context_options["proxy"] = {"server": self.proxy_url}
             elif self.proxy_url.startswith("socks5://"):
                 context_options["proxy"] = {"server": self.proxy_url}
+            logger.info(f'使用代理: {self.proxy_url}')
         
+        logger.info('正在创建浏览器上下文...')
         self.context = await self.browser.new_context(**context_options)
+        logger.info('浏览器上下文创建完成')
         
         # 创建页面
+        logger.info('正在创建新页面...')
         self.page = await self.context.new_page()
+        logger.info('页面创建完成')
         
         # 应用指纹
+        logger.info('正在应用浏览器指纹...')
         await self._apply_fingerprint(self.page)
+        logger.info('浏览器指纹应用完成')
         
         # 设置超时
         self.page.set_default_timeout(45000)
         self.page.set_default_navigation_timeout(90000)
+        logger.info('页面超时设置: 默认45000ms, 导航90000ms')
         
         # 启用请求拦截，阻止不必要的资源加载
         async def route_handler(route):
@@ -244,21 +254,28 @@ class OpenAIRegister:
             await route.continue_()
         
         await self.page.route("**/*", route_handler)
+        logger.info('请求拦截器已设置')
         
         # 访问登录页面
         login_url = 'https://chatgpt.com/auth/login?next=%2Fsora%2F'
+        logger.info(f'正在访问登录页面: {login_url}')
         await self.page.goto(login_url, wait_until="networkidle", timeout=90000)
         
         # 等待页面加载
+        logger.info('等待页面DOM加载...')
         await self.page.wait_for_load_state("domcontentloaded", timeout=45000)
         
+        current_url = self.page.url
+        logger.info(f'当前URL: {current_url}')
         logger.info('等待页面渲染完成...')
         await self._sleep(800)
         logger.info('ChatGPT 登录页面已打开')
+        logger.info('=' * 80)
     
     async def _click_sign_up(self):
         """点击免费注册按钮"""
-        logger.info('正在点击免费注册按钮...')
+        current_url = self.page.url
+        logger.info(f'正在点击免费注册按钮..., 当前URL: {current_url}')
         
         # 检查是否已经在注册页面
         email_input = await self.page.query_selector('input[type="email"], input[name="email"]')
@@ -268,6 +285,7 @@ class OpenAIRegister:
         
         # 等待注册按钮出现
         try:
+            logger.info('等待注册按钮出现 (timeout=15000ms)...')
             signup_btn = await self.page.wait_for_selector(
                 'button[data-testid="signup-button"]',
                 timeout=15000
@@ -277,33 +295,49 @@ class OpenAIRegister:
                 logger.info('已点击免费注册按钮 (data-testid)')
             else:
                 # 备用：通过文本查找
+                logger.info('未找到 data-testid 按钮，尝试通过文本查找...')
                 buttons = await self.page.query_selector_all('button, a')
+                clicked = False
                 for btn in buttons:
                     text = await btn.text_content()
                     if text and ('免费注册' in text or 'Sign up' in text or '注册' in text):
                         await btn.click()
-                        logger.info('已点击免费注册按钮')
+                        logger.info(f'已点击免费注册按钮 (文本: {text.strip()})')
+                        clicked = True
                         break
+                if not clicked:
+                    logger.warn('未找到注册按钮')
         except Exception as e:
-            logger.warn(f'点击注册按钮时出错: {e}')
+            logger.error(f'点击注册按钮时出错: {e}')
+            current_url = self.page.url
+            logger.error(f'错误发生时的URL: {current_url}')
+            raise
         
         # 等待跳转
+        logger.info('等待页面跳转...')
         await self._sleep(2000)
+        current_url = self.page.url
+        logger.info(f'跳转后URL: {current_url}')
         
         # 等待邮箱输入框出现
-        for _ in range(10):
+        logger.info('等待邮箱输入框出现...')
+        for i in range(10):
             email_input = await self.page.query_selector('input[type="email"], input[name="email"]')
             if email_input:
-                logger.info('邮箱输入框已出现')
+                logger.info(f'邮箱输入框已出现 (尝试 {i+1}/10)')
                 break
             await self._sleep(1000)
+        else:
+            logger.warn('等待10秒后仍未找到邮箱输入框')
     
     async def _enter_email(self, email: str):
         """输入邮箱地址"""
-        logger.info(f'正在输入邮箱: {email}')
+        current_url = self.page.url
+        logger.info(f'正在输入邮箱: {email}, 当前URL: {current_url}')
         
         # 先点击 "more options" 按钮（如果存在）
         try:
+            logger.info('检查是否存在 "more options" 按钮...')
             more_options_xpath = '/html/body/div/div/div/div/div[1]/div/div/form/div[1]/div/button'
             more_options_btn = await self.page.query_selector(f'xpath={more_options_xpath}')
             if more_options_btn:
@@ -312,41 +346,80 @@ class OpenAIRegister:
                     await more_options_btn.click()
                     logger.info('已点击 "more options" 按钮')
                     await self._sleep(1000)
+                else:
+                    logger.info('"more options" 按钮存在但不可见')
+            else:
+                logger.info('未找到 "more options" 按钮')
         except Exception as e:
             logger.warn(f'点击 "more options" 按钮失败: {e}')
         
         # 等待邮箱输入框
-        email_input = await self.page.wait_for_selector(
-            'input[type="email"], input[name="email"], input[autocomplete="email"]',
-            timeout=20000
-        )
-        
-        if email_input:
-            await email_input.click(click_count=3)
-            await email_input.fill(email)
-            await self._sleep(500)
-            logger.info('邮箱已输入')
-        else:
-            raise Exception('找不到邮箱输入框')
+        logger.info('等待邮箱输入框出现 (timeout=20000ms)...')
+        try:
+            email_input = await self.page.wait_for_selector(
+                'input[type="email"], input[name="email"], input[autocomplete="email"]',
+                timeout=20000
+            )
+            
+            if email_input:
+                logger.info('邮箱输入框已找到')
+                await email_input.click(click_count=3)
+                await email_input.fill(email)
+                await self._sleep(500)
+                logger.info('邮箱已输入')
+            else:
+                raise Exception('找不到邮箱输入框')
+        except Exception as e:
+            current_url = self.page.url
+            logger.error(f'输入邮箱失败: {e}, 当前URL: {current_url}')
+            try:
+                page_text = await self.page.evaluate("() => document.body.innerText || ''")
+                logger.error(f'页面文本前500字符: {page_text[:500]}')
+                await self.page.screenshot(path=self._get_screenshot_path('email-input-error.png'))
+            except:
+                pass
+            raise
         
         await self._click_continue()
         await self._sleep(1500)
+        current_url = self.page.url
+        logger.info(f'邮箱输入完成，当前URL: {current_url}')
     
     async def _enter_password(self, password: str):
         """输入密码"""
-        logger.info('正在输入密码...')
+        current_url = self.page.url
+        logger.info(f'正在输入密码... 当前URL: {current_url}')
         
-        password_input = await self.page.wait_for_selector('input[type="password"]', timeout=20000)
-        
-        if password_input:
-            await password_input.click()
-            await password_input.fill(password)
-            await self._sleep(500)
-            logger.info('密码已输入')
-            await self._click_continue()
-            await self._sleep(1500)
-        else:
-            raise Exception('找不到密码输入框')
+        try:
+            # 等待密码输入框，添加详细日志
+            logger.info('等待密码输入框出现 (timeout=20000ms)...')
+            password_input = await self.page.wait_for_selector('input[type="password"]', timeout=20000)
+            
+            if password_input:
+                logger.info('密码输入框已找到')
+                await password_input.click()
+                await password_input.fill(password)
+                await self._sleep(500)
+                logger.info('密码已输入')
+                await self._click_continue()
+                await self._sleep(1500)
+            else:
+                # 如果找不到，尝试截图并记录页面信息
+                try:
+                    page_text = await self.page.evaluate("() => document.body.innerText || ''")
+                    logger.error(f'找不到密码输入框。页面文本前500字符: {page_text[:500]}')
+                    await self.page.screenshot(path=self._get_screenshot_path('password-input-error.png'))
+                except:
+                    pass
+                raise Exception('找不到密码输入框')
+        except Exception as e:
+            current_url = self.page.url
+            logger.error(f'输入密码失败: {e}, 当前URL: {current_url}')
+            try:
+                await self.page.screenshot(path=self._get_screenshot_path('password-error.png'))
+            except:
+                pass
+            raise
     
     async def _enter_verification_code(self, code: str):
         """输入验证码"""
@@ -511,48 +584,73 @@ class OpenAIRegister:
         Returns:
             是否注册成功
         """
+        logger.info('=' * 80)
+        logger.info('开始注册流程')
+        logger.info(f'邮箱: {email}')
+        current_url = self.page.url
+        logger.info(f'起始URL: {current_url}')
+        logger.info('=' * 80)
+        
         try:
             # 1. 点击免费注册按钮
+            logger.info('步骤1: 点击免费注册按钮')
             await self._click_sign_up()
+            current_url = self.page.url
+            logger.info(f'步骤1完成，当前URL: {current_url}')
             
             # 2. 输入邮箱
+            logger.info('步骤2: 输入邮箱')
             await self._enter_email(email)
+            current_url = self.page.url
+            logger.info(f'步骤2完成，当前URL: {current_url}')
             
             # 检查限流
             if await self._check_for_sign_in_issue():
+                logger.error('检测到限流错误')
                 raise Exception('We ran into an issue while signing you in, please take a break and try again soon.')
             
             # 3. 输入密码
+            logger.info('步骤3: 输入密码')
             await self._enter_password(password)
+            current_url = self.page.url
+            logger.info(f'步骤3完成，当前URL: {current_url}')
             
             # 检查限流
             if await self._check_for_sign_in_issue():
+                logger.error('检测到限流错误')
                 raise Exception('We ran into an issue while signing you in, please take a break and try again soon.')
             
             # 4. 等待并输入验证码
-            logger.info('等待邮箱验证码...')
+            logger.info('步骤4: 等待并输入邮箱验证码')
             code = await get_verification_code()
             await self._enter_verification_code(code)
+            current_url = self.page.url
+            logger.info(f'步骤4完成，当前URL: {current_url}')
             
             # 检查限流
             if await self._check_for_sign_in_issue():
+                logger.error('检测到限流错误')
                 raise Exception('We ran into an issue while signing you in, please take a break and try again soon.')
             
             # 5. 输入全名和生日
+            logger.info('步骤5: 输入全名和生日')
             await self._enter_name_and_birthday()
+            current_url = self.page.url
+            logger.info(f'步骤5完成，当前URL: {current_url}')
             
             # 检查限流
             await self._sleep(1500)
             if await self._check_for_sign_in_issue():
+                logger.error('检测到限流错误')
                 raise Exception('We ran into an issue while signing you in, please take a break and try again soon.')
             
             # 6. 等待页面跳转
-            logger.info('等待页面跳转...')
+            logger.info('步骤6: 等待页面跳转...')
             await self._sleep(4000)
             
             # 检查是否注册成功
             current_url = self.page.url
-            logger.info(f'当前页面: {current_url}')
+            logger.info(f'最终URL: {current_url}')
             
             if 'auth.openai.com' in current_url:
                 # 检查是否有错误
@@ -570,6 +668,7 @@ class OpenAIRegister:
                 
                 if has_error:
                     logger.error(f'注册失败，页面显示错误: {has_error}')
+                    logger.error(f'当前URL: {current_url}')
                     return False
                 
                 logger.warn(f'注册可能未完成，当前仍在认证页面: {current_url}')
@@ -577,17 +676,26 @@ class OpenAIRegister:
             
             # 成功跳转到 sora 或 chat 页面
             if 'sora.com' in current_url or 'chat.openai.com' in current_url or 'chatgpt.com' in current_url:
+                logger.info('=' * 80)
                 logger.info('注册成功！已跳转到主页面')
+                logger.info(f'最终URL: {current_url}')
+                logger.info('=' * 80)
                 return True
             
             logger.warn(f'注册状态不确定，当前页面: {current_url}')
             return False
         except Exception as error:
+            current_url = self.page.url if self.page else "页面已关闭"
+            logger.error('=' * 80)
             logger.error(f'注册过程出错: {error}')
+            logger.error(f'错误发生时的URL: {current_url}')
+            logger.error('=' * 80)
             try:
-                await self.page.screenshot(path=self._get_screenshot_path('debug-register-error.png'))
-            except:
-                pass
+                if self.page:
+                    await self.page.screenshot(path=self._get_screenshot_path('debug-register-error.png'))
+                    logger.info('已保存错误截图: debug-register-error.png')
+            except Exception as e:
+                logger.warn(f'保存截图失败: {e}')
             raise
     
     async def _handle_sora_onboarding(self, email: str):

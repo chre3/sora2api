@@ -163,13 +163,16 @@ class UpdateAutoRegisterConfigRequest(BaseModel):
 @router.post("/api/login", response_model=LoginResponse)
 async def login(request: LoginRequest):
     """Admin login"""
+    logger.info(f"收到登录请求: username={request.username}")
     if AuthManager.verify_admin(request.username, request.password):
         # Generate simple token
         token = f"admin-{secrets.token_urlsafe(32)}"
         # Store token in active tokens
         active_admin_tokens.add(token)
+        logger.info(f"登录成功: username={request.username}")
         return LoginResponse(success=True, token=token, message="Login successful")
     else:
+        logger.warning(f"登录失败: username={request.username} (无效凭据)")
         return LoginResponse(success=False, message="Invalid credentials")
 
 @router.post("/api/logout")
@@ -231,6 +234,9 @@ async def get_tokens(token: str = Depends(verify_admin_token)) -> List[dict]:
 @router.post("/api/tokens")
 async def add_token(request: AddTokenRequest, token: str = Depends(verify_admin_token)):
     """Add a new Access Token"""
+    logger.info("收到添加Token请求")
+    logger.info(f"参数: proxy_url={request.proxy_url}, remark={request.remark}, "
+               f"image_enabled={request.image_enabled}, video_enabled={request.video_enabled}")
     try:
         new_token = await token_manager.add_token(
             token_value=request.token,
@@ -252,11 +258,14 @@ async def add_token(request: AddTokenRequest, token: str = Depends(verify_admin_
                 image_concurrency=request.image_concurrency,
                 video_concurrency=request.video_concurrency
             )
+        logger.info(f"Token添加成功: token_id={new_token.id}, email={new_token.email}")
         return {"success": True, "message": "Token 添加成功", "token_id": new_token.id}
     except ValueError as e:
+        logger.warning(f"Token已存在: {str(e)}")
         # Token already exists
         raise HTTPException(status_code=409, detail=str(e))
     except Exception as e:
+        logger.error(f"添加Token失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=f"添加 Token 失败: {str(e)}")
 
 @router.post("/api/tokens/st2at")
@@ -1187,17 +1196,26 @@ async def update_auto_register_config(
 @router.post("/api/auto-register/run")
 async def run_auto_register(token: str = Depends(verify_admin_token)):
     """手动执行一次定时补号"""
+    logger.info("=" * 80)
+    logger.info("收到定时补号请求")
+    logger.info("=" * 80)
     try:
         from ..services.auto_register import AutoRegisterService
         from ..services.token_manager import TokenManager
         
         # 获取配置
+        logger.info("正在获取自动注册配置...")
         config_obj = await db.get_auto_register_config()
+        logger.info(f"配置信息: enabled={config_obj.enabled}, country_code={config_obj.country_code}, "
+                   f"service_code={config_obj.service_code}, max_price={config_obj.max_price}, "
+                   f"binding_rule={config_obj.binding_rule}, proxy_url={config_obj.proxy_url}")
         
         if not config_obj.enabled:
+            logger.warning("定时补号未启用")
             raise HTTPException(status_code=400, detail="定时补号未启用")
         
         if not config_obj.country_code or not config_obj.service_code or config_obj.max_price is None:
+            logger.error("配置不完整: 缺少国家代码、服务代码或出价金额")
             raise HTTPException(status_code=400, detail="请先配置国家代码、服务代码和出价金额")
         
         # 检查补号数量限制
@@ -1207,18 +1225,26 @@ async def run_auto_register(token: str = Depends(verify_admin_token)):
             auto_registered_count = sum(1 for token in all_tokens 
                                       if token.remark and "自动注册" in token.remark)
             
+            logger.info(f"当前已注册账号数: {auto_registered_count}/{config_obj.max_count}")
+            
             if auto_registered_count >= config_obj.max_count:
+                logger.warning(f"已达到补号数量上限（{auto_registered_count}/{config_obj.max_count}），停止补号")
                 raise HTTPException(
                     status_code=400, 
                     detail=f"已达到补号数量上限（{auto_registered_count}/{config_obj.max_count}），停止补号"
                 )
-            
-            logger.info(f"当前已注册账号数: {auto_registered_count}/{config_obj.max_count}")
         
         # 创建自动注册服务（传递 db 和 token_manager 实例）
+        logger.info("正在创建自动注册服务...")
         auto_register = AutoRegisterService(db=db, token_manager=token_manager)
+        logger.info("自动注册服务创建完成")
         
         # 执行注册（新流程会自动保存到数据库）
+        logger.info("开始执行注册流程...")
+        logger.info(f"参数: country_code={config_obj.country_code}, service_code={config_obj.service_code}, "
+                   f"max_price={config_obj.max_price}, binding_rule={config_obj.binding_rule or '1绑1'}, "
+                   f"proxy_url={config_obj.proxy_url}")
+        
         result = await auto_register.register_one(
             country_code=config_obj.country_code,
             service_code=config_obj.service_code,
@@ -1227,15 +1253,26 @@ async def run_auto_register(token: str = Depends(verify_admin_token)):
             proxy_url=config_obj.proxy_url
         )
         
+        logger.info(f"注册流程完成，结果: success={result.get('success')}")
+        
         if not result.get("success"):
+            logger.error("注册失败")
             raise HTTPException(status_code=500, detail="注册失败")
         
         # 账号已经自动保存到数据库
         accounts = result.get("accounts", [])
         registered_count = len(accounts)
+        logger.info(f"成功注册 {registered_count} 个账号")
+        for i, account in enumerate(accounts, 1):
+            logger.info(f"  账号{i}: email={account.get('email')}, is_active={account.get('is_active')}")
         
         # 更新最后运行时间
         await db.update_auto_register_last_run()
+        logger.info("已更新最后运行时间")
+        
+        logger.info("=" * 80)
+        logger.info(f"定时补号完成: 成功注册 {registered_count} 个账号")
+        logger.info("=" * 80)
         
         return {
             "success": True,
@@ -1244,6 +1281,8 @@ async def run_auto_register(token: str = Depends(verify_admin_token)):
             "accounts": accounts
         }
     except HTTPException:
+        logger.error("定时补号失败: HTTP异常")
         raise
     except Exception as e:
+        logger.error(f"定时补号失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"执行定时补号失败: {str(e)}")

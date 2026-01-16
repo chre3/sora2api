@@ -1,4 +1,5 @@
 """Main application entry point"""
+import logging
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, HTMLResponse
@@ -8,6 +9,9 @@ from pathlib import Path
 
 # Import modules
 from .core.config import config
+
+# 配置日志系统 - 确保输出到控制台
+logger = logging.getLogger(__name__)
 from .core.database import Database
 from .services.token_manager import TokenManager
 from .services.proxy_manager import ProxyManager
